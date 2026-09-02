@@ -13,6 +13,7 @@
  */
 package io.trino.server.security.oauth2;
 
+import com.google.common.collect.ImmutableSet;
 import com.google.inject.Inject;
 import io.airlift.log.Logger;
 import io.trino.server.security.AbstractBearerAuthenticator;
@@ -27,6 +28,7 @@ import jakarta.ws.rs.container.ContainerRequestContext;
 import java.net.URI;
 import java.sql.Date;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -44,6 +46,7 @@ public class OAuth2Authenticator
     private final OAuth2Client client;
     private final String principalField;
     private final String scopes;
+    private final Optional<String> groupsField;
     private final UserMapping userMapping;
     private final TokenPairSerializer tokenPairSerializer;
     private final TokenRefresher tokenRefresher;
@@ -58,6 +61,7 @@ public class OAuth2Authenticator
         this.tokenRefresher = requireNonNull(tokenRefresher, "tokenRefresher is null");
         this.tokenPairSerializer = requireNonNull(tokenPairSerializer, "tokenPairSerializer is null");
         this.serverConfigProvider = requireNonNull(serverConfigProvider, "serverConfigProvider is null");
+        groupsField = requireNonNull(config.getGroupsField(), "groupsField is null");
         userMapping = createUserMapping(config.getUserMappingPattern(), config.getUserMappingFile());
     }
 
@@ -84,6 +88,8 @@ public class OAuth2Authenticator
         }
         Identity.Builder builder = Identity.forUser(userMapping.mapUser(principal.get()));
         builder.withPrincipal(new BasicPrincipal(principal.get()));
+        groupsField.flatMap(field -> Optional.ofNullable((List<String>) claims.get().get(field)))
+                .ifPresent(groups -> builder.withGroups(ImmutableSet.copyOf(groups)));
         return Optional.of(builder.build());
     }
 
