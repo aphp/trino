@@ -89,6 +89,7 @@ import static com.google.common.base.Verify.verify;
 import static com.google.common.base.Verify.verifyNotNull;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.getOnlyElement;
+import static com.google.common.collect.Lists.partition;
 import static com.google.common.reflect.Reflection.newProxy;
 import static io.trino.hive.thrift.metastore.GrantRevokeType.GRANT;
 import static io.trino.hive.thrift.metastore.GrantRevokeType.REVOKE;
@@ -113,6 +114,8 @@ public class ThriftHiveMetastoreClient
 
     private static final Pattern TABLE_PARAMETER_SAFE_KEY_PATTERN = Pattern.compile("^[a-zA-Z_]+$");
     private static final Pattern TABLE_PARAMETER_SAFE_VALUE_PATTERN = Pattern.compile("^[a-zA-Z0-9\\s]*$");
+    private static final int GET_TABLE_OBJECTS_BATCH_SIZE = 100;
+    private static final String TABLE_COMMENT = "comment";
 
     private final TransportSupplier transportSupplier;
     private TTransport transport;
@@ -121,6 +124,7 @@ public class ThriftHiveMetastoreClient
 
     private final MetastoreSupportsDateStatistics metastoreSupportsDateStatistics;
     private final AtomicInteger chosenGetTableAlternative;
+    private final AtomicInteger chosenGetTableMetaAlternative;
     private final AtomicInteger chosenTableParamAlternative;
     private final AtomicInteger chosenAlterTransactionalTableAlternative;
     private final AtomicInteger chosenAlterPartitionsAlternative;
@@ -133,6 +137,7 @@ public class ThriftHiveMetastoreClient
             Optional<String> catalogName,
             MetastoreSupportsDateStatistics metastoreSupportsDateStatistics,
             AtomicInteger chosenGetTableAlternative,
+            AtomicInteger chosenGetTableMetaAlternative,
             AtomicInteger chosenTableParamAlternative,
             AtomicInteger chosenAlterTransactionalTableAlternative,
             AtomicInteger chosenAlterPartitionsAlternative,
@@ -143,6 +148,7 @@ public class ThriftHiveMetastoreClient
         this.hostname = requireNonNull(hostname, "hostname is null");
         this.metastoreSupportsDateStatistics = requireNonNull(metastoreSupportsDateStatistics, "metastoreSupportsDateStatistics is null");
         this.chosenGetTableAlternative = requireNonNull(chosenGetTableAlternative, "chosenGetTableAlternative is null");
+        this.chosenGetTableMetaAlternative = requireNonNull(chosenGetTableMetaAlternative, "chosenGetTableMetaAlternative is null");
         this.chosenTableParamAlternative = requireNonNull(chosenTableParamAlternative, "chosenTableParamAlternative is null");
         this.chosenAlterTransactionalTableAlternative = requireNonNull(chosenAlterTransactionalTableAlternative, "chosenAlterTransactionalTableAlternative is null");
         this.chosenAlterPartitionsAlternative = requireNonNull(chosenAlterPartitionsAlternative, "chosenAlterPartitionsAlternative is null");
@@ -195,6 +201,16 @@ public class ThriftHiveMetastoreClient
     public List<TableMeta> getTableMeta(String databaseName)
             throws TException
     {
+        return alternativeCall(
+                exception -> !isUnknownMethodExceptionalResponse(exception),
+                chosenGetTableMetaAlternative,
+                () -> getTableMetaDirect(databaseName),
+                () -> getTableMetaFromTableObjects(databaseName));
+    }
+
+    private List<TableMeta> getTableMetaDirect(String databaseName)
+            throws TException
+    {
         if (databaseName.indexOf('*') >= 0 || databaseName.indexOf('|') >= 0) {
             // in this case we replace any pipes with a glob and then filter the output
             return client.getTableMeta(prependCatalogToDbName(catalogName, databaseName.replace('|', '*')), "*", ImmutableList.of()).stream()
@@ -202,6 +218,24 @@ public class ThriftHiveMetastoreClient
                     .collect(toImmutableList());
         }
         return client.getTableMeta(prependCatalogToDbName(catalogName, databaseName), "*", ImmutableList.of());
+    }
+
+    // Hive metastore older than 2.1 does not support get_table_meta
+    private List<TableMeta> getTableMetaFromTableObjects(String databaseName)
+            throws TException
+    {
+        String thriftDatabaseName = prependCatalogToDbName(catalogName, databaseName);
+        ImmutableList.Builder<TableMeta> tableMetas = ImmutableList.builder();
+        for (List<String> tableNames : partition(client.getAllTables(thriftDatabaseName), GET_TABLE_OBJECTS_BATCH_SIZE)) {
+            for (Table table : client.getTableObjectsByName(thriftDatabaseName, tableNames)) {
+                TableMeta tableMeta = new TableMeta(table.getDbName(), table.getTableName(), table.getTableType());
+                if (table.getParameters() != null && table.getParameters().containsKey(TABLE_COMMENT)) {
+                    tableMeta.setComments(table.getParameters().get(TABLE_COMMENT));
+                }
+                tableMetas.add(tableMeta);
+            }
+        }
+        return tableMetas.build();
     }
 
     @Override
