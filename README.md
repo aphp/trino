@@ -38,6 +38,9 @@ compatibility that upstream removed:
 * `ROWNUM`-based `LIMIT` pushdown for the Oracle connector, for compatibility
   with Oracle versions older than 12c (upstream switched to the ANSI
   `FETCH FIRST` syntax).
+* Table listing on Hive metastores older than 2.1 (such as Hive 1.2 on HDP),
+  which lack the `get_table_meta` Thrift call: the Hive connector falls back
+  to `get_all_tables` and `get_table_objects_by_name`.
 
 See the `main` branch's commit history for details on each change. For
 everything else, refer to upstream Trino's own documentation below.
